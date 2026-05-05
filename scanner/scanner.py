@@ -97,6 +97,12 @@ class Scanner:
                 self.results["is_nextjs"] = True
                 self.add_detail("Özel 'X-NextJS-*' header'ları tespit edildi.")
                 
+            # Cookie kontrolü (Next.js spesifik cookie'ler)
+            set_cookie = headers.get("set-cookie", "")
+            if "__prerender_bypass" in set_cookie or "x-invoke-path" in headers:
+                self.results["is_nextjs"] = True
+                self.add_detail("Next.js özel cookie/header izleri bulundu.")
+                
         except Exception as e:
             self.log(f"Header analizi hatası: {str(e)}", "error")
 
@@ -107,13 +113,24 @@ class Scanner:
             html = resp.text
             
             # Next.js App Router kontrolü
-            if "_next/static/chunks/app/" in html or "app-pages-internals" in html:
+            if "_next/static/chunks/app/" in html or "app-pages-internals" in html or "self.__next_f" in html:
                 self.results["is_nextjs"] = True
                 self.results["rsc_enabled"] = True
-                self.add_detail("Next.js App Router aktif. RSC kullanılıyor.")
-            elif "_next/static" in html:
+                self.add_detail("Next.js App Router izleri bulundu (RSC Aktif).")
+            # Next.js Pages Router (Standart) kontrolü
+            elif 'id="__NEXT_DATA__"' in html or "_next/static" in html:
                 self.results["is_nextjs"] = True
-                self.add_detail("Next.js Pages Router veya temel altyapı kullanılıyor.")
+                self.add_detail("Next.js Pages Router veya statik dosya yapısı tespit edildi.")
+
+            # build-manifest.json gibi Next.js spesifik dosyaları kontrol et (Kesin kanıt)
+            if not self.results["is_nextjs"]:
+                try:
+                    manifest_resp = self.session.get(urljoin(self.target, "/_next/build-manifest.json"), timeout=5)
+                    if manifest_resp.status_code == 200 and "pages" in manifest_resp.text:
+                        self.results["is_nextjs"] = True
+                        self.add_detail("/_next/build-manifest.json dosyasına ulaşıldı. Framework kesinlikle Next.js.")
+                except Exception:
+                    pass
 
             # JS bundle yollarını çıkar
             js_files = re.findall(r'src="(/_next/static/[^"]+\.js)"', html)
