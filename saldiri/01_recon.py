@@ -8,16 +8,19 @@ Hedef sitenin teknoloji yığınını ve savunmasız sürümlerini tespit eder.
 import sys
 import re
 import requests
+import urllib3
 from utils import (
     print_phase_banner, check_target, info, success, warning, error,
     parse_target_arg, save_results, DEFAULT_HEADERS, is_vulnerable, Colors
 )
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 def analyze_headers(target_url):
     """HTTP yanıt başlıklarını analiz eder"""
     info("HTTP Header Analizi başlatılıyor...")
     try:
-        resp = requests.head(target_url, headers=DEFAULT_HEADERS, timeout=5)
+        resp = requests.head(target_url, headers=DEFAULT_HEADERS, timeout=5, verify=False)
         headers = resp.headers
         
         results = {
@@ -58,7 +61,7 @@ def find_framework_fingerprints(target_url):
     
     # Ana sayfayı çek
     try:
-        resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=5)
+        resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=5, verify=False)
         html = resp.text
         
         # Next.js statik dosyalarını ara (/_next/static/...)
@@ -97,7 +100,7 @@ def check_rsc_endpoint(target_url):
     
     try:
         # Ana sayfaya boş RSC POST isteği
-        resp = requests.post(target_url, headers=headers, data="[]", timeout=5)
+        resp = requests.post(target_url, headers=headers, data="[]", timeout=5, verify=False)
         
         # Yanıt Flight formatında mı? Veya Server Action hatası mı?
         if "next-action" in resp.headers.get("x-powered-by", "").lower() or \

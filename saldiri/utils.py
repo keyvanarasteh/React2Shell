@@ -12,7 +12,11 @@ import sys
 import time
 import json
 import requests
+import urllib3
 from datetime import datetime
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================
 # Renkli Çıktı (ANSI renk kodları)
@@ -104,25 +108,38 @@ DEFAULT_HEADERS = {
 def check_target(target_url, timeout=5):
     """
     Hedefin erişilebilir olup olmadığını kontrol et.
-    Health check endpoint'i kullanır.
+    Önce /api/health dener, JSON değilse veya yoksa ana sayfaya (/) bakar.
     """
     health_url = f"{target_url.rstrip('/')}/api/health"
     try:
-        resp = requests.get(health_url, headers=DEFAULT_HEADERS, timeout=timeout)
+        # Önce health endpoint'i dene
+        resp = requests.get(health_url, headers=DEFAULT_HEADERS, timeout=timeout, verify=False)
         if resp.status_code == 200:
-            data = resp.json()
-            success(f"Hedef erişilebilir: {target_url}")
-            success(f"Servis: {data.get('service', 'unknown')}")
-            success(f"Next.js: {data.get('version', {}).get('next', '?')}")
-            success(f"React: {data.get('version', {}).get('react', '?')}")
-            success(f"RSC: {'Aktif' if data.get('rsc') else 'Pasif'}")
-            return data
+            try:
+                data = resp.json()
+                success(f"Hedef erişilebilir: {target_url}")
+                success(f"Servis: {data.get('service', 'unknown')}")
+                success(f"Next.js: {data.get('version', {}).get('next', '?')}")
+                success(f"React: {data.get('version', {}).get('react', '?')}")
+                success(f"RSC: {'Aktif' if data.get('rsc') else 'Pasif'}")
+                return data
+            except json.JSONDecodeError:
+                pass # JSON değilse ana sayfayı denemeye geç
+                
+    except Exception as e:
+        pass # Hata olursa ana sayfayı denemeye geç
+        
+    # Health endpoint başarısız olduysa ana sayfaya bak
+    try:
+        resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=timeout, verify=False)
+        if resp.status_code == 200:
+            success(f"Hedef erişilebilir (Ana sayfa): {target_url}")
+            return {"status": "ok", "service": "unknown", "version": {}}
         else:
             error(f"Hedef yanıt verdi ama beklenmeyen kod: {resp.status_code}")
             return None
     except requests.ConnectionError:
         error(f"Hedefe bağlanılamıyor: {target_url}")
-        error("Website çalışıyor mu? → cd website && npm run dev")
         return None
     except requests.Timeout:
         error(f"Hedef yanıt vermedi (timeout: {timeout}s)")
@@ -141,6 +158,7 @@ def timed_request(method, url, **kwargs):
 
     start = time.time()
     try:
+        kwargs.setdefault("verify", False)
         resp = requests.request(method, url, **kwargs)
         elapsed_ms = round((time.time() - start) * 1000, 2)
         return resp, elapsed_ms
