@@ -21,6 +21,12 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 from colorama import init, Fore, Style
+try:
+    from flask import Flask, request, jsonify, render_template
+except ImportError:
+    pass # Flask not installed, CLI only mode
+from urllib.parse import urljoin
+from colorama import init, Fore, Style
 
 # SSL uyarılarını kapat
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -44,6 +50,7 @@ class Scanner:
             "rsc_enabled": False,
             "vulnerable": False,
             "dependencies": {},
+            "exposed_files": [],
             "details": []
         }
         
@@ -91,7 +98,11 @@ class Scanner:
                 # Sürüm var mı kontrol et (Bazen X-Powered-By: Next.js 15.0.3 yazar)
                 m = re.search(r'next\.js\s*([\d\.]+)', x_powered_by)
                 if m:
-                    self.results["nextjs_version"] = m.group(1)
+                    self.results["nextjs_version"] = {
+                        "version": m.group(1),
+                        "source": "HTTP Headers",
+                        "context": f"x-powered-by: {x_powered_by}"
+                    }
                     self.add_detail(f"Header üzerinden Next.js sürümü tespit edildi: {m.group(1)}")
 
             if any(k.startswith("x-nextjs") for k in headers):
@@ -116,7 +127,12 @@ class Scanner:
             # HTML içerisinden meta tag ile Next.js tespiti
             generator_match = re.search(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']Next\.js\s+(1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)["\']', html, re.IGNORECASE)
             if generator_match and not self.results["nextjs_version"]:
-                self.results["nextjs_version"] = generator_match.group(1)
+                context = html[max(0, generator_match.start() - 30) : min(len(html), generator_match.end() + 30)]
+                self.results["nextjs_version"] = {
+                    "version": generator_match.group(1),
+                    "source": urljoin(self.target, "/"),
+                    "context": context
+                }
                 self.results["is_nextjs"] = True
                 self.add_detail(f"HTML meta tag üzerinden Next.js sürümü tespit edildi: {generator_match.group(1)}")
 
@@ -186,17 +202,31 @@ class Scanner:
                 
                 # Genel paket versiyonu tespiti
                 # Örn: /*! framer-motion v10.16.4 */ veya /*! @radix-ui/react-dropdown-menu 2.0.6 */
-                pkg_matches = re.findall(r'/\*!\s*(?:[A-Za-z0-9_\-\.\@\/]+\s+)?([a-zA-Z0-9_\-\.\@\/]+)\s+[vV]?([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9_\-\.]*)\s*\*/', js_content)
-                for pkg_name, pkg_version in pkg_matches:
+                pkg_matches = re.finditer(r'/\*!\s*(?:[A-Za-z0-9_\-\.\@\/]+\s+)?([a-zA-Z0-9_\-\.\@\/]+)\s+[vV]?([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9_\-\.]*)\s*\*/', js_content)
+                for match in pkg_matches:
+                    pkg_name = match.group(1)
+                    pkg_version = match.group(2)
                     if pkg_name not in self.results["dependencies"]:
-                        self.results["dependencies"][pkg_name] = pkg_version
+                        context = js_content[max(0, match.start() - 30) : min(len(js_content), match.end() + 30)]
+                        self.results["dependencies"][pkg_name] = {
+                            "version": pkg_version,
+                            "source": js_url,
+                            "context": context
+                        }
                         self.add_detail(f"Bağımlılık tespit edildi: {pkg_name} (v{pkg_version})")
 
                 # json içerisine gömülü package.json kalıntıları (örn. name:"lucide-react",version:"0.263.1")
-                embedded_pkg_matches = re.findall(r'(?:name|pkg|package)\s*:\s*["\']([a-zA-Z0-9_\-\.\@\/]+)["\']\s*,\s*(?:version|ver)\s*:\s*["\']([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9_\-\.]*)["\']', js_content)
-                for pkg_name, pkg_version in embedded_pkg_matches:
+                embedded_pkg_matches = re.finditer(r'(?:name|pkg|package)\s*:\s*["\']([a-zA-Z0-9_\-\.\@\/]+)["\']\s*,\s*(?:version|ver)\s*:\s*["\']([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9_\-\.]*)["\']', js_content)
+                for match in embedded_pkg_matches:
+                    pkg_name = match.group(1)
+                    pkg_version = match.group(2)
                     if pkg_name not in self.results["dependencies"] and len(pkg_name) > 1 and len(pkg_version) > 1:
-                        self.results["dependencies"][pkg_name] = pkg_version
+                        context = js_content[max(0, match.start() - 30) : min(len(js_content), match.end() + 30)]
+                        self.results["dependencies"][pkg_name] = {
+                            "version": pkg_version,
+                            "source": js_url,
+                            "context": context
+                        }
                         self.add_detail(f"Gömülü bağımlılık tespit edildi: {pkg_name} (v{pkg_version})")
                 
                 # React sürümü arama
@@ -209,16 +239,28 @@ class Scanner:
                         r'react-dom(?:@|[\s\-\_]*v?)(1[89]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)'
                     ]
                     for pattern in react_patterns:
-                        matches = re.findall(pattern, js_content, re.IGNORECASE)
+                        matches = list(re.finditer(pattern, js_content, re.IGNORECASE))
                         if matches:
+                            match = matches[0]
+                            version = match.group(1)
                             if "version" in pattern.lower() or "reactversion" in pattern.lower():
                                 if "react" in js_content.lower() or "useLayoutEffect" in js_content or "useState" in js_content:
-                                    self.results["react_version"] = matches[0]
-                                    self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {matches[0]}")
+                                    context = js_content[max(0, match.start() - 30) : min(len(js_content), match.end() + 30)]
+                                    self.results["react_version"] = {
+                                        "version": version,
+                                        "source": js_url,
+                                        "context": context
+                                    }
+                                    self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {version}")
                                     break
                             else:
-                                self.results["react_version"] = matches[0]
-                                self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {matches[0]}")
+                                context = js_content[max(0, match.start() - 30) : min(len(js_content), match.end() + 30)]
+                                self.results["react_version"] = {
+                                    "version": version,
+                                    "source": js_url,
+                                    "context": context
+                                }
+                                self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {version}")
                                 break
 
                 # Next.js sürümü arama
@@ -230,16 +272,28 @@ class Scanner:
                         r'"next"\s*:\s*"[^"]*(1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)[^"]*"'
                     ]
                     for pattern in next_patterns:
-                        matches = re.findall(pattern, js_content, re.IGNORECASE)
+                        matches = list(re.finditer(pattern, js_content, re.IGNORECASE))
                         if matches:
+                            match = matches[0]
+                            version = match.group(1)
                             if "version" in pattern.lower() and "next" not in pattern.lower():
                                 if "next" in js_content.lower() or "app-router" in js_content.lower() or "window.next" in js_content:
-                                    self.results["nextjs_version"] = matches[0]
-                                    self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {matches[0]}")
+                                    context = js_content[max(0, match.start() - 30) : min(len(js_content), match.end() + 30)]
+                                    self.results["nextjs_version"] = {
+                                        "version": version,
+                                        "source": js_url,
+                                        "context": context
+                                    }
+                                    self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {version}")
                                     break
                             else:
-                                self.results["nextjs_version"] = matches[0]
-                                self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {matches[0]}")
+                                context = js_content[max(0, match.start() - 30) : min(len(js_content), match.end() + 30)]
+                                self.results["nextjs_version"] = {
+                                    "version": version,
+                                    "source": js_url,
+                                    "context": context
+                                }
+                                self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {version}")
                                 break
 
                 # Diğer paketleri taramaya devam etmek için erken çıkışı (break) kaldırıyoruz
@@ -257,11 +311,19 @@ class Scanner:
                     data = health_resp.json()
                     if "version" in data:
                         if "react" in data["version"] and not self.results["react_version"]:
-                            self.results["react_version"] = data["version"]["react"]
-                            self.add_detail(f"/api/health üzerinden React sürümü tespit edildi: {self.results['react_version']}")
+                            self.results["react_version"] = {
+                                "version": data["version"]["react"],
+                                "source": f"{self.target}/api/health",
+                                "context": json.dumps(data)
+                            }
+                            self.add_detail(f"/api/health üzerinden React sürümü tespit edildi: {self.results['react_version']['version']}")
                         if "next" in data["version"] and not self.results["nextjs_version"]:
-                            self.results["nextjs_version"] = data["version"]["next"]
-                            self.add_detail(f"/api/health üzerinden Next.js sürümü tespit edildi: {self.results['nextjs_version']}")
+                            self.results["nextjs_version"] = {
+                                "version": data["version"]["next"],
+                                "source": f"{self.target}/api/health",
+                                "context": json.dumps(data)
+                            }
+                            self.add_detail(f"/api/health üzerinden Next.js sürümü tespit edildi: {self.results['nextjs_version']['version']}")
             except Exception:
                 pass
 
@@ -305,16 +367,18 @@ class Scanner:
         # React sürümü kontrolü
         is_react_vuln = False
         if self.results["react_version"]:
-            if any(self.results["react_version"].startswith(v) for v in self.vuln_react):
+            ver = self.results["react_version"]["version"] if isinstance(self.results["react_version"], dict) else self.results["react_version"]
+            if any(ver.startswith(v) for v in self.vuln_react):
                 is_react_vuln = True
-                self.add_detail(f"React {self.results['react_version']} savunmasız sürümler listesinde!")
+                self.add_detail(f"React {ver} savunmasız sürümler listesinde!")
         
         # Next.js sürümü kontrolü
         is_next_vuln = False
         if self.results["nextjs_version"]:
-            if any(self.results["nextjs_version"].startswith(v) for v in self.vuln_next):
+            ver = self.results["nextjs_version"]["version"] if isinstance(self.results["nextjs_version"], dict) else self.results["nextjs_version"]
+            if any(ver.startswith(v) for v in self.vuln_next):
                 is_next_vuln = True
-                self.add_detail(f"Next.js {self.results['nextjs_version']} savunmasız sürümler listesinde!")
+                self.add_detail(f"Next.js {ver} savunmasız sürümler listesinde!")
 
         # Eğer herhangi biri savunmasızsa ve RSC aktifse KESİN SAVUNMASIZ
         if (is_react_vuln or is_next_vuln) and self.results["rsc_enabled"]:
@@ -332,12 +396,45 @@ class Scanner:
 
         self.results["vulnerable"] = vulnerable
 
+    def fuzz_sensitive_files(self):
+        """Hassas dosyalar için fuzzing yapar (.env, .git/config vs.)"""
+        self.results["exposed_files"] = []
+        sensitive_paths = [
+            ".env", ".env.local", ".env.development", ".env.production",
+            ".git/config", "package.json", "package-lock.json",
+            "docker-compose.yml", "Dockerfile", ".npmrc", "yarn.lock"
+        ]
+        self.add_detail("Hassas dosyalar için fuzzing başlatılıyor...")
+        
+        def check_path(path):
+            url = urljoin(self.target, f"/{path}")
+            try:
+                resp = self.session.get(url, timeout=5)
+                if resp.status_code == 200:
+                    # Basit bir false positive kontrolü (HTML sayfası dönmüş olabilir)
+                    content_type = resp.headers.get("content-type", "")
+                    if "text/html" not in content_type and "<html" not in resp.text[:100].lower():
+                        # Dosya ifşa olmuş olabilir
+                        context = resp.text[:200] + "..." if len(resp.text) > 200 else resp.text
+                        self.results["exposed_files"].append({
+                            "path": path,
+                            "url": url,
+                            "context": context
+                        })
+                        self.add_detail(f"Hassas dosya ifşası: {path} ({url})")
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            executor.map(check_path, sensitive_paths)
+
     def run(self):
         """Tüm tarama adımlarını yürütür"""
         self.log(f"Hedef taranıyor: {self.target}", "info")
         self.analyze_headers()
         self.fetch_static_bundles()
         self.check_flight_protocol()
+        self.fuzz_sensitive_files()
         self.evaluate_vulnerability()
         return self.results
 
@@ -352,12 +449,14 @@ def print_result(res):
     print(f"[{Fore.GREEN}+{Style.RESET_ALL}] Framework: Next.js")
     
     if res['nextjs_version']:
-        print(f"[{Fore.GREEN}+{Style.RESET_ALL}] Next.js Sürümü: {Fore.CYAN}{res['nextjs_version']}{Style.RESET_ALL}")
+        ver = res['nextjs_version']['version'] if isinstance(res['nextjs_version'], dict) else res['nextjs_version']
+        print(f"[{Fore.GREEN}+{Style.RESET_ALL}] Next.js Sürümü: {Fore.CYAN}{ver}{Style.RESET_ALL}")
     else:
         print(f"[{Fore.YELLOW}-{Style.RESET_ALL}] Next.js Sürümü: Bulunamadı")
         
     if res['react_version']:
-        print(f"[{Fore.GREEN}+{Style.RESET_ALL}] React Sürümü: {Fore.CYAN}{res['react_version']}{Style.RESET_ALL}")
+        ver = res['react_version']['version'] if isinstance(res['react_version'], dict) else res['react_version']
+        print(f"[{Fore.GREEN}+{Style.RESET_ALL}] React Sürümü: {Fore.CYAN}{ver}{Style.RESET_ALL}")
     else:
         print(f"[{Fore.YELLOW}-{Style.RESET_ALL}] React Sürümü: Bulunamadı")
         
@@ -368,8 +467,14 @@ def print_result(res):
         
     if res.get('dependencies'):
         print(f"\n[{Fore.CYAN}*{Style.RESET_ALL}] Tespit Edilen Diğer Bağımlılıklar:")
-        for pkg, ver in res['dependencies'].items():
+        for pkg, data in res['dependencies'].items():
+            ver = data['version'] if isinstance(data, dict) else data
             print(f"  - {Fore.CYAN}{pkg}{Style.RESET_ALL}: {ver}")
+
+    if res.get('exposed_files'):
+        print(f"\n[{Fore.RED}!{Style.RESET_ALL}] İfşa Olan Hassas Dosyalar:")
+        for f in res['exposed_files']:
+            print(f"  - {Fore.RED}{f['path']}{Style.RESET_ALL} -> {f['url']}")
 
     print("\nSonuç:")
     if res['vulnerable']:
@@ -380,14 +485,43 @@ def print_result(res):
         print("Hedefte savunmasız sürüm veya aktif bir RSC saldırı yüzeyi bulunamadı.")
     print("="*50)
 
+def start_web_server(port=5000):
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        return render_template("index.html")
+
+    @app.route("/api/scan", methods=["POST"])
+    def api_scan():
+        data = request.get_json()
+        if not data or "url" not in data:
+            return jsonify({"error": "URL belirtilmedi"}), 400
+        
+        target = data["url"]
+        if not target.startswith("http"):
+            target = "https://" + target
+            
+        scanner = Scanner(target, verbose=False)
+        res = scanner.run()
+        return jsonify(res)
+
+    print(f"{Fore.GREEN}[*] Starting React2Shell Web Panel on http://127.0.0.1:{port}{Style.RESET_ALL}")
+    app.run(host="127.0.0.1", port=port, debug=False)
+
 def main():
     parser = argparse.ArgumentParser(description="React2Shell (CVE-2025-55182) Pentest Scanner")
     parser.add_argument("-u", "--url", help="Tek bir hedef URL (örn: https://example.com)")
     parser.add_argument("-l", "--list", help="Hedef URL'lerin bulunduğu dosya listesi")
     parser.add_argument("-v", "--verbose", action="store_true", help="Detaylı log çıktıları")
     parser.add_argument("-o", "--output", help="Sonuçları JSON olarak kaydet")
+    parser.add_argument("--web", type=int, nargs="?", const=5000, help="Web panel'i başlatır. Opsiyonel olarak port belirtebilirsiniz (varsayılan: 5000).")
     
     args = parser.parse_args()
+
+    if args.web:
+        start_web_server(args.web)
+        return
 
     print(rf"""{Fore.RED}
     ____                  __  ___ _____ __         ____ 

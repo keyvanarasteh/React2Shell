@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>React2Shell Web Scanner</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>React2Shell <span class="highlight">Scanner</span></h1>
+            <p>CVE-2025-55182 Detection & Analysis</p>
+        </header>
+
+        <section class="scan-section">
+            <form id="scan-form">
+                <input type="text" id="target-url" placeholder="https://example.com" required>
+                <button type="submit" id="scan-btn">
+                    <span class="btn-text">Start Scan</span>
+                    <div class="loader hidden" id="scan-loader"></div>
+                </button>
+            </form>
+        </section>
+
+        <section class="results-section hidden" id="results-section">
+            <div class="grid" id="main-results">
+            </div>
+
+            <div class="details-section">
+                <h2>Dependencies</h2>
+                <div class="tags" id="dependencies-list"></div>
+            </div>
+
+            <div class="details-section hidden" id="fuzzing-container">
+                <h2>Exposed Files</h2>
+                <div class="list" id="fuzzing-list"></div>
+            </div>
+            
+            <div class="details-section">
+                <h2>Scan Logs</h2>
+                <div class="logs" id="scan-logs"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Modal for Context -->
+    <div class="modal-overlay hidden" id="context-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">Match Context</h3>
+                <button class="close-btn" id="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p><strong>Source:</strong> <a href="#" id="modal-source" target="_blank"></a></p>
+                <pre><code id="modal-code"></code></pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('scan-form');
+        const urlInput = document.getElementById('target-url');
+        const scanBtn = document.getElementById('scan-btn');
+        const btnText = document.querySelector('.btn-text');
+        const loader = document.getElementById('scan-loader');
+        const resultsSection = document.getElementById('results-section');
+        const mainResults = document.getElementById('main-results');
+        const depList = document.getElementById('dependencies-list');
+        const fuzzingContainer = document.getElementById('fuzzing-container');
+        const fuzzingList = document.getElementById('fuzzing-list');
+        const logsContainer = document.getElementById('scan-logs');
+        
+        const modal = document.getElementById('context-modal');
+        const modalTitle = document.getElementById('modal-title');
+        const modalSource = document.getElementById('modal-source');
+        const modalCode = document.getElementById('modal-code');
+        const closeModal = document.getElementById('close-modal');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = urlInput.value.trim();
+            if(!url) return;
+
+            btnText.classList.add('hidden');
+            loader.classList.remove('hidden');
+            scanBtn.disabled = true;
+            resultsSection.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/scan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url})
+                });
+                const data = await response.json();
+                
+                renderResults(data);
+                
+            } catch(err) {
+                alert("Error during scan: " + err);
+            } finally {
+                btnText.classList.remove('hidden');
+                loader.classList.add('hidden');
+                scanBtn.disabled = false;
+                resultsSection.classList.remove('hidden');
+            }
+        });
+
+        function renderResults(data) {
+            mainResults.innerHTML = '';
+            
+            const vulnCard = document.createElement('div');
+            vulnCard.className = `card ${data.vulnerable ? 'danger' : 'safe'}`;
+            vulnCard.innerHTML = `<h3>Status</h3><div class="value">${data.vulnerable ? 'VULNERABLE' : 'SECURE'}</div>`;
+            mainResults.appendChild(vulnCard);
+
+            const rscCard = document.createElement('div');
+            rscCard.className = `card ${data.rsc_enabled ? 'warning' : ''}`;
+            rscCard.innerHTML = `<h3>RSC / Flight</h3><div class="value">${data.rsc_enabled ? 'Enabled' : 'Disabled/Unknown'}</div>`;
+            mainResults.appendChild(rscCard);
+
+            const nextCard = document.createElement('div');
+            nextCard.className = 'card interactive';
+            let nextVer = data.nextjs_version ? (typeof data.nextjs_version === 'object' ? data.nextjs_version.version : data.nextjs_version) : 'N/A';
+            nextCard.innerHTML = `<h3>Next.js</h3><div class="value">${nextVer}</div>`;
+            if(data.nextjs_version && typeof data.nextjs_version === 'object') {
+                nextCard.onclick = () => openModal('Next.js', data.nextjs_version);
+            }
+            mainResults.appendChild(nextCard);
+
+            const reactCard = document.createElement('div');
+            reactCard.className = 'card interactive';
+            let reactVer = data.react_version ? (typeof data.react_version === 'object' ? data.react_version.version : data.react_version) : 'N/A';
+            reactCard.innerHTML = `<h3>React</h3><div class="value">${reactVer}</div>`;
+            if(data.react_version && typeof data.react_version === 'object') {
+                reactCard.onclick = () => openModal('React', data.react_version);
+            }
+            mainResults.appendChild(reactCard);
+
+            depList.innerHTML = '';
+            if(data.dependencies && Object.keys(data.dependencies).length > 0) {
+                for(const [pkg, info] of Object.entries(data.dependencies)) {
+                    const tag = document.createElement('div');
+                    tag.className = 'tag';
+                    let ver = typeof info === 'object' ? info.version : info;
+                    tag.innerHTML = `<span>${pkg}</span><span class="version">${ver}</span>`;
+                    if(typeof info === 'object') {
+                        tag.classList.add('interactive');
+                        tag.onclick = () => openModal(pkg, info);
+                    }
+                    depList.appendChild(tag);
+                }
+            } else {
+                depList.innerHTML = '<span class="text-muted">None detected</span>';
+            }
+
+            fuzzingList.innerHTML = '';
+            if(data.exposed_files && data.exposed_files.length > 0) {
+                fuzzingContainer.classList.remove('hidden');
+                data.exposed_files.forEach(f => {
+                    const item = document.createElement('div');
+                    item.className = 'fuzz-item interactive';
+                    item.innerHTML = `<strong>${f.path}</strong>`;
+                    item.onclick = () => openModal(f.path, {source: f.url, context: f.context});
+                    fuzzingList.appendChild(item);
+                });
+            } else {
+                fuzzingContainer.classList.add('hidden');
+            }
+
+            logsContainer.innerHTML = '';
+            if(data.details && data.details.length > 0) {
+                data.details.forEach(d => {
+                    const line = document.createElement('div');
+                    line.className = 'log-line';
+                    line.textContent = `> ${d}`;
+                    logsContainer.appendChild(line);
+                });
+            }
+        }
+
+        function openModal(title, info) {
+            modalTitle.textContent = title;
+            modalSource.href = info.source;
+            modalSource.textContent = info.source;
+            modalCode.textContent = info.context;
+            modal.classList.remove('hidden');
+        }
+
+        closeModal.onclick = () => modal.classList.add('hidden');
+        modal.onclick = (e) => {
+            if(e.target === modal) modal.classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
