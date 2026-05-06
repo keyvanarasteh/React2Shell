@@ -82,6 +82,17 @@ def execute_command(target_url, command):
         error(f"Exploit başarısız: {e}")
         return None
 
+def load_payload_template():
+    """RCE payload şablonunu yükler"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    payload_path = os.path.join(script_dir, "payloads", "flight_rce.json")
+    try:
+        with open(payload_path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        error(f"Payload şablonu bulunamadı: {payload_path}")
+        return None
+
 def write_poc_file(target_url):
     """Sunucu dosya sisteminde PoC dosyası oluşturur"""
     info("Sunucuda kanıt (PoC) dosyası oluşturuluyor...")

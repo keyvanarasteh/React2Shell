@@ -30,10 +30,11 @@ def load_module(name, path):
         print(f"Error loading {name}: {e}")
         return None
 
-recon = load_module("recon", "01_recon.py")
-source_leak = load_module("source_leak", "02_source_leak.py")
-dos = load_module("dos", "03_dos.py")
-rce = load_module("rce", "04_rce.py")
+script_dir = os.path.dirname(os.path.abspath(__file__))
+recon = load_module("recon", os.path.join(script_dir, "01_recon.py"))
+source_leak = load_module("source_leak", os.path.join(script_dir, "02_source_leak.py"))
+dos = load_module("dos", os.path.join(script_dir, "03_dos.py"))
+rce = load_module("rce", os.path.join(script_dir, "04_rce.py"))
 
 app = Flask(__name__)
 

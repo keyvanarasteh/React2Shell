@@ -15,11 +15,13 @@ from utils import (
 
 def load_payload_template():
     """Source leak payload şablonunu yükler"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    payload_path = os.path.join(script_dir, "payloads", "flight_source.json")
     try:
-        with open("payloads/flight_source.json", "r") as f:
+        with open(payload_path, "r") as f:
             return json.load(f)
     except FileNotFoundError:
-        error("Payload şablonu bulunamadı: payloads/flight_source.json")
+        error(f"Payload şablonu bulunamadı: {payload_path}")
         return None
 
 def craft_leak_payload(action_id="dummy"):
