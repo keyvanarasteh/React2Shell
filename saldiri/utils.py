@@ -104,11 +104,31 @@ def print_phase_banner(phase_num, title, cve=None):
 
 PROXIES = {}
 
-def enable_tor():
+def is_tor_active():
+    """Tor bağlantısını kontrol eder"""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(('127.0.0.1', 9050))
+        s.close()
+        return True
+    except:
+        return False
+
+def enable_tor(strict=True):
     """Tor proxy'sini etkinleştir (SOCKS5)"""
     global PROXIES
-    # socks5h hostname çözümlemesini de Tor üzerinden yapar
     tor_proxy = "socks5h://127.0.0.1:9050"
+    
+    if not is_tor_active():
+        if strict:
+            error("Tor bağlantısı sağlanamadı (127.0.0.1:9050). Tor'un kurulu ve çalışır olduğundan emin olun.")
+            import sys
+            sys.exit(1)
+        else:
+            return False
+
     PROXIES = {
         "http": tor_proxy,
         "https": tor_proxy
@@ -117,6 +137,17 @@ def enable_tor():
     os.environ['HTTP_PROXY'] = tor_proxy
     os.environ['HTTPS_PROXY'] = tor_proxy
     info(f"Tor Proxy etkinleştirildi: {tor_proxy}")
+    return True
+
+def disable_tor():
+    """Tor proxy'sini devre dışı bırakır"""
+    global PROXIES
+    PROXIES = {}
+    if 'HTTP_PROXY' in os.environ:
+        del os.environ['HTTP_PROXY']
+    if 'HTTPS_PROXY' in os.environ:
+        del os.environ['HTTPS_PROXY']
+    info("Tor Proxy devre dışı bırakıldı (Doğrudan bağlantı).")
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

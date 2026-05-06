@@ -16,7 +16,7 @@ from flask import Flask, render_template_string, request, jsonify, Response
 
 # utils'den yardımcıları al
 from utils import (
-    BANNER, Colors, timestamp, enable_tor
+    BANNER, Colors, timestamp, enable_tor, disable_tor, is_tor_active, error
 )
 
 # Diğer scriptleri dinamik olarak yükle
@@ -257,13 +257,23 @@ HTML_TEMPLATE = """
             border: 1px solid rgba(160, 0, 255, 0.2);
             padding: 15px 20px;
             border-radius: 16px;
-            margin-bottom: 30px;
+            margin-bottom: 10px;
         }
 
         .tor-toggle span {
             font-weight: 600;
             color: #d8a0ff;
         }
+        
+        .tor-status {
+            font-size: 0.8rem;
+            margin-bottom: 30px;
+            padding: 0 5px;
+            font-weight: bold;
+        }
+        
+        .tor-status.connected { color: var(--success); }
+        .tor-status.disconnected { color: var(--danger); }
 
         .switch {
             position: relative;
@@ -418,10 +428,11 @@ HTML_TEMPLATE = """
                     <div class="tor-toggle">
                         <span>Tor Proxy (SOCKS5)</span>
                         <label class="switch">
-                            <input type="checkbox" id="tor">
+                            <input type="checkbox" id="tor" onchange="checkTorStatus()">
                             <span class="slider"></span>
                         </label>
                     </div>
+                    <div id="tor-status-text" class="tor-status disconnected">Durum: Kontrol Ediliyor...</div>
 
                     <label>Saldırı Fazları</label>
                     <div class="checkbox-group">
@@ -545,6 +556,42 @@ HTML_TEMPLATE = """
             statusText.textContent = 'TAMAMLANDI';
         }
 
+        async function checkTorStatus() {
+            const torToggle = document.getElementById('tor');
+            const statusText = document.getElementById('tor-status-text');
+            
+            if (!torToggle.checked) {
+                statusText.className = 'tor-status disconnected';
+                statusText.textContent = 'Durum: DEVRE DIŞI (Trafik doğrudan iletilecek)';
+                return;
+            }
+            
+            statusText.className = 'tor-status';
+            statusText.style.color = '#888';
+            statusText.textContent = 'Durum: Ağ kontrol ediliyor...';
+            
+            try {
+                const response = await fetch('/api/tor_status');
+                const data = await response.json();
+                
+                if (data.active) {
+                    statusText.className = 'tor-status connected';
+                    statusText.textContent = 'Durum: BAĞLI (127.0.0.1:9050)';
+                } else {
+                    statusText.className = 'tor-status disconnected';
+                    statusText.textContent = 'Durum: BAĞLANTI YOK! (Tor servisi bulunamadı)';
+                    // Gerekirse tiki kaldırabiliriz, ama kullanıcının karar vermesi için bırakıyoruz
+                    // torToggle.checked = false;
+                }
+            } catch (e) {
+                statusText.className = 'tor-status disconnected';
+                statusText.textContent = 'Durum: KONTROL BAŞARISIZ';
+            }
+        }
+
+        // İlk yüklemede kontrol et
+        window.onload = () => checkTorStatus();
+
         // Checkbox styling
         document.querySelectorAll('.checkbox-item input').forEach(input => {
             input.addEventListener('change', (e) => {
@@ -564,6 +611,10 @@ HTML_TEMPLATE = """
 def index():
     return render_template_string(HTML_TEMPLATE)
 
+@app.route('/api/tor_status')
+def tor_status():
+    return jsonify({"active": is_tor_active()})
+
 @app.route('/api/attack', methods=['POST'])
 def attack():
     data = request.json
@@ -574,7 +625,18 @@ def attack():
     def run_chain():
         # Tor ayarı
         if tor:
-            enable_tor()
+            # Strict=True sayesinde, Tor yoksa sys.exit(1) atıp hata fırlatır
+            # Böylece tek bir bit bile doğrudan çıkmaz
+            try:
+                if not enable_tor(strict=False):
+                    print("[-][CRITICAL] Tor bağlantısı sağlanamadı!")
+                    print("[-][CRITICAL] Saldırı İPTAL EDİLDİ (Sızıntıyı önlemek için doğrudan bağlantıya izin verilmedi).")
+                    return
+            except Exception as e:
+                print(f"[-][CRITICAL] Tor yapılandırma hatası: {e}")
+                return
+        else:
+            disable_tor()
             
         # 0. Hedef Doğrulama
         print(f"[*] Hedef: {target}")
