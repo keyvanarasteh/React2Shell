@@ -13,6 +13,7 @@ import time
 import json
 import requests
 import urllib3
+import os
 from datetime import datetime
 
 # Disable SSL warnings
@@ -101,6 +102,22 @@ def print_phase_banner(phase_num, title, cve=None):
 # HTTP Yardımcıları
 # ============================================
 
+PROXIES = {}
+
+def enable_tor():
+    """Tor proxy'sini etkinleştir (SOCKS5)"""
+    global PROXIES
+    # socks5h hostname çözümlemesini de Tor üzerinden yapar
+    tor_proxy = "socks5h://127.0.0.1:9050"
+    PROXIES = {
+        "http": tor_proxy,
+        "https": tor_proxy
+    }
+    # Environment variables for direct requests calls in other modules
+    os.environ['HTTP_PROXY'] = tor_proxy
+    os.environ['HTTPS_PROXY'] = tor_proxy
+    info(f"Tor Proxy etkinleştirildi: {tor_proxy}")
+
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
@@ -113,7 +130,7 @@ def check_target(target_url, timeout=5):
     health_url = f"{target_url.rstrip('/')}/api/health"
     try:
         # Önce health endpoint'i dene
-        resp = requests.get(health_url, headers=DEFAULT_HEADERS, timeout=timeout, verify=False)
+        resp = requests.get(health_url, headers=DEFAULT_HEADERS, timeout=timeout, verify=False, proxies=PROXIES)
         if resp.status_code == 200:
             try:
                 data = resp.json()
@@ -131,7 +148,7 @@ def check_target(target_url, timeout=5):
         
     # Health endpoint başarısız olduysa ana sayfaya bak
     try:
-        resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=timeout, verify=False)
+        resp = requests.get(target_url, headers=DEFAULT_HEADERS, timeout=timeout, verify=False, proxies=PROXIES)
         if resp.status_code == 200:
             success(f"Hedef erişilebilir (Ana sayfa): {target_url}")
             return {"status": "ok", "service": "unknown", "version": {}}
@@ -155,6 +172,7 @@ def timed_request(method, url, **kwargs):
     """
     kwargs.setdefault("headers", DEFAULT_HEADERS)
     kwargs.setdefault("timeout", 10)
+    kwargs.setdefault("proxies", PROXIES)
 
     start = time.time()
     try:
@@ -232,7 +250,15 @@ def parse_target_arg():
         action="store_true",
         help="Detaylı çıktı"
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--tor",
+        action="store_true",
+        help="Tor proxy kullan (SOCKS5: 127.0.0.1:9050)"
+    )
+    args = parser.parse_args()
+    if args.tor:
+        enable_tor()
+    return args
 
 def timestamp():
     """Şu anki zaman damgası"""

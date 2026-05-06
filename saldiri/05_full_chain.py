@@ -34,12 +34,17 @@ def parse_args():
     parser.add_argument("--target", "-t", required=True, help="Hedef URL (örn: http://localhost:3000)")
     parser.add_argument("--include-dos", action="store_true", help="DoS testini de dahil et (sunucuyu çökertebilir)")
     parser.add_argument("--phases", default="all", help="Çalıştırılacak fazlar (örn: recon,source,rce veya all)")
+    parser.add_argument("--tor", action="store_true", help="Tor proxy kullan (SOCKS5: 127.0.0.1:9050)")
     return parser.parse_args()
 
 def main():
     print_banner()
     args = parse_args()
     
+    if args.tor:
+        from utils import enable_tor
+        enable_tor()
+        
     phases_to_run = [p.strip().lower() for p in args.phases.split(",")]
     run_all = "all" in phases_to_run
     
