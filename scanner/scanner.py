@@ -51,12 +51,14 @@ class Scanner:
             "vulnerable": False,
             "dependencies": {},
             "exposed_files": [],
+            "secrets": [],
             "details": []
         }
         
-        # Bilinen savunmasız sürümler
-        self.vuln_react = ["19.0.0", "19.1.0", "19.1.1", "19.2.0"]
+        # Bilinen savunmasız sürümler (React2Shell - CVE-2025-55182)
+        self.vuln_react = ["19.0.0", "19.1.0", "19.1.1", "19.2.0", "18.3.0-canary"]
         self.vuln_next = [
+            "14.3.0-canary",
             "15.0.0", "15.0.1", "15.0.2", "15.0.3", "15.0.4",
             "15.1.0", "15.1.1", "15.1.2", "15.1.3", "15.1.4",
             "15.1.5", "15.1.6", "15.1.7", "15.1.8",
@@ -300,6 +302,9 @@ class Scanner:
                 # if self.results["react_version"] and self.results["nextjs_version"]:
                 #     break
                     
+                # Secrets/API Keys arama
+                self.detect_secrets(js_content, js_url)
+
             except Exception as e:
                 continue
 
@@ -326,6 +331,35 @@ class Scanner:
                             self.add_detail(f"/api/health üzerinden Next.js sürümü tespit edildi: {self.results['nextjs_version']['version']}")
             except Exception:
                 pass
+
+    def detect_secrets(self, content, source_url):
+        """JS içeriğinde hassas bilgileri (API Key, Token vb.) arar"""
+        patterns = {
+            "Google API Key": r"AIza[0-9A-Za-z\-_]{35}",
+            "Firebase URL": r"https://[a-z0-9\-]+\.firebaseio\.com",
+            "Slack Webhook": r"https://hooks\.slack\.com/services/T[a-zA-Z0-9_]+/B[a-zA-Z0-9_]+/[a-zA-Z0-9_]+",
+            "AWS Access Key": r"AKIA[0-9A-Z]{16}",
+            "AWS Secret Key": r"secret_?key\s*[:=]\s*['\"][0-9a-zA-Z\/+]{40}['\"]",
+            "JWT Token": r"ey[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
+            "GitHub Token": r"gh[oprs]_[a-zA-Z0-9]{36,}",
+            "Discord Webhook": r"https://discord\.com/api/webhooks/[0-9]+/[a-zA-Z0-9\-]+",
+            "Generic API Key": r"(?:api_?key|auth_?token|access_?token)\s*[:=]\s*['\"][0-9a-zA-Z\-_]{16,}['\"]"
+        }
+        
+        for name, pattern in patterns.items():
+            matches = re.finditer(pattern, content, re.IGNORECASE)
+            for match in matches:
+                secret_val = match.group(0)
+                # Aynı secret'ı tekrar ekleme
+                if not any(s["value"] == secret_val for s in self.results["secrets"]):
+                    context = content[max(0, match.start() - 30) : min(len(content), match.end() + 30)]
+                    self.results["secrets"].append({
+                        "type": name,
+                        "value": secret_val,
+                        "source": source_url,
+                        "context": context
+                    })
+                    self.add_detail(f"Hassas bilgi tespit edildi: {name} ({source_url})")
 
     def check_flight_protocol(self):
         """RSC Flight protokolünün aktif olup olmadığını test eder"""
@@ -400,9 +434,12 @@ class Scanner:
         """Hassas dosyalar için fuzzing yapar (.env, .git/config vs.)"""
         self.results["exposed_files"] = []
         sensitive_paths = [
-            ".env", ".env.local", ".env.development", ".env.production",
-            ".git/config", "package.json", "package-lock.json",
-            "docker-compose.yml", "Dockerfile", ".npmrc", "yarn.lock"
+            ".env", ".env.local", ".env.development", ".env.production", ".env.test",
+            ".git/config", ".git/HEAD", "package.json", "package-lock.json",
+            "docker-compose.yml", "Dockerfile", ".npmrc", "yarn.lock",
+            "next.config.js", "tsconfig.json", ".vscode/settings.json",
+            "web.config", "phpinfo.php", "config.php", "wp-config.php",
+            ".htaccess", ".htpasswd", "server-status", "robots.txt"
         ]
         self.add_detail("Hassas dosyalar için fuzzing başlatılıyor...")
         
@@ -475,6 +512,11 @@ def print_result(res):
         print(f"\n[{Fore.RED}!{Style.RESET_ALL}] İfşa Olan Hassas Dosyalar:")
         for f in res['exposed_files']:
             print(f"  - {Fore.RED}{f['path']}{Style.RESET_ALL} -> {f['url']}")
+
+    if res.get('secrets'):
+        print(f"\n[{Fore.RED}!{Style.RESET_ALL}] Tespit Edilen Hassas Bilgiler (Secrets):")
+        for s in res['secrets']:
+            print(f"  - {Fore.RED}{s['type']}{Style.RESET_ALL}: {s['value']} ({s['source']})")
 
     print("\nSonuç:")
     if res['vulnerable']:

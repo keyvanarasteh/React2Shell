@@ -37,6 +37,11 @@
                 <h2>Exposed Files</h2>
                 <div class="list" id="fuzzing-list"></div>
             </div>
+
+            <div class="details-section hidden" id="secrets-container">
+                <h2>Sensitive Information (Secrets)</h2>
+                <div class="list" id="secrets-list"></div>
+            </div>
             
             <div class="details-section">
                 <h2>Scan Logs</h2>
@@ -70,6 +75,8 @@
         const depList = document.getElementById('dependencies-list');
         const fuzzingContainer = document.getElementById('fuzzing-container');
         const fuzzingList = document.getElementById('fuzzing-list');
+        const secretsContainer = document.getElementById('secrets-container');
+        const secretsList = document.getElementById('secrets-list');
         const logsContainer = document.getElementById('scan-logs');
         
         const modal = document.getElementById('context-modal');
@@ -168,6 +175,19 @@
                 });
             } else {
                 fuzzingContainer.classList.add('hidden');
+            }
+            secretsList.innerHTML = '';
+            if(data.secrets && data.secrets.length > 0) {
+                secretsContainer.classList.remove('hidden');
+                data.secrets.forEach(s => {
+                    const item = document.createElement('div');
+                    item.className = 'fuzz-item interactive danger-border';
+                    item.innerHTML = `<span class="tag-label">${s.type}</span> <strong>${s.value.substring(0, 20)}...</strong>`;
+                    item.onclick = () => openModal(s.type, {source: s.source, context: s.context});
+                    secretsList.appendChild(item);
+                });
+            } else {
+                secretsContainer.classList.add('hidden');
             }
 
             logsContainer.innerHTML = '';
