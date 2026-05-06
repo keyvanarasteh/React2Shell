@@ -43,6 +43,7 @@ class Scanner:
             "react_version": None,
             "rsc_enabled": False,
             "vulnerable": False,
+            "dependencies": {},
             "details": []
         }
         
@@ -112,6 +113,13 @@ class Scanner:
             resp = self.session.get(self.target, timeout=10)
             html = resp.text
             
+            # HTML içerisinden meta tag ile Next.js tespiti
+            generator_match = re.search(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']Next\.js\s+(1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)["\']', html, re.IGNORECASE)
+            if generator_match and not self.results["nextjs_version"]:
+                self.results["nextjs_version"] = generator_match.group(1)
+                self.results["is_nextjs"] = True
+                self.add_detail(f"HTML meta tag üzerinden Next.js sürümü tespit edildi: {generator_match.group(1)}")
+
             # Next.js App Router kontrolü
             if "_next/static/chunks/app/" in html or "app-pages-internals" in html or "self.__next_f" in html:
                 self.results["is_nextjs"] = True
@@ -133,7 +141,7 @@ class Scanner:
                     pass
 
             # JS bundle yollarını çıkar
-            js_files = re.findall(r'src="(/_next/static/[^"]+\.js)"', html)
+            js_files = re.findall(r'(/_next/static/[a-zA-Z0-9_/\-\.]+\.js)', html)
             js_files = list(set(js_files)) # Deduplicate
             
             if js_files:
@@ -144,35 +152,99 @@ class Scanner:
             self.log(f"Statik bundle analizi hatası: {str(e)}", "error")
 
     def extract_versions_from_js(self, js_files):
-        """İndirilen JS dosyalarının içinde React ve Next.js sürümlerini arar"""
-        # Sadece framework ile ilgili olabilecek dosyaları tara
-        target_files = [f for f in js_files if "framework" in f or "main" in f or "webpack" in f]
-        if not target_files:
-            target_files = js_files[:3] # İlk 3 dosyayı tara
+        """İndirilen JS dosyalarının içinde React, Next.js ve diğer paketlerin sürümlerini arar"""
+        scanned_files = set()
+        to_scan = list(set(js_files))
+        to_scan.sort(key=lambda x: 0 if any(k in x for k in ["framework", "main", "webpack", "app", "pages", "layout"]) else 1)
+        max_scan_limit = 100 # Sonsuz döngüyü önlemek için sınır
 
-        for js_path in target_files:
+        while to_scan and len(scanned_files) < max_scan_limit:
+            js_path = to_scan.pop(0)
+            if js_path in scanned_files:
+                continue
+            scanned_files.add(js_path)
+
             js_url = urljoin(self.target, js_path)
             try:
-                js_resp = self.session.get(js_url, timeout=10)
+                js_resp = self.session.get(js_url, timeout=7)
+                if js_resp.status_code != 200:
+                    continue
                 js_content = js_resp.text
                 
-                # React sürümü arama (Örn: react@19.0.0, "React v19.0.0")
+                # Yeni js dosyalarını keşfet (iç içe chunk loading)
+                new_js = re.findall(r'["\'](/[a-zA-Z0-9_/\-\.]+\.js)["\']', js_content)
+                chunk_matches = re.findall(r'static/chunks/[a-zA-Z0-9_/\-\.]+\.js', js_content)
+                for chunk in chunk_matches:
+                    new_js.append("/_next/" + chunk)
+                
+                for nj in new_js:
+                    if nj not in scanned_files and nj not in to_scan:
+                        to_scan.append(nj)
+                
+                # Yeni eklenenleri tekrar sıralayalım
+                to_scan.sort(key=lambda x: 0 if any(k in x for k in ["framework", "main", "webpack", "app", "pages", "layout"]) else 1)
+                
+                # Genel paket versiyonu tespiti
+                # Örn: /*! framer-motion v10.16.4 */ veya /*! @radix-ui/react-dropdown-menu 2.0.6 */
+                pkg_matches = re.findall(r'/\*!\s*(?:[A-Za-z0-9_\-\.\@\/]+\s+)?([a-zA-Z0-9_\-\.\@\/]+)\s+[vV]?([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9_\-\.]*)\s*\*/', js_content)
+                for pkg_name, pkg_version in pkg_matches:
+                    if pkg_name not in self.results["dependencies"]:
+                        self.results["dependencies"][pkg_name] = pkg_version
+                        self.add_detail(f"Bağımlılık tespit edildi: {pkg_name} (v{pkg_version})")
+
+                # json içerisine gömülü package.json kalıntıları (örn. name:"lucide-react",version:"0.263.1")
+                embedded_pkg_matches = re.findall(r'(?:name|pkg|package)\s*:\s*["\']([a-zA-Z0-9_\-\.\@\/]+)["\']\s*,\s*(?:version|ver)\s*:\s*["\']([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9_\-\.]*)["\']', js_content)
+                for pkg_name, pkg_version in embedded_pkg_matches:
+                    if pkg_name not in self.results["dependencies"] and len(pkg_name) > 1 and len(pkg_version) > 1:
+                        self.results["dependencies"][pkg_name] = pkg_version
+                        self.add_detail(f"Gömülü bağımlılık tespit edildi: {pkg_name} (v{pkg_version})")
+                
+                # React sürümü arama
                 if not self.results["react_version"]:
-                    react_matches = re.findall(r'react(?:@|[\s\-\_]*v?)(1[89]\.[\d\.]+)', js_content, re.IGNORECASE)
-                    if react_matches:
-                        self.results["react_version"] = react_matches[0]
-                        self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {react_matches[0]}")
+                    react_patterns = [
+                        r'react(?:@|[\s\-\_]*v?)(1[89]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)',
+                        r'reconcilerVersion\s*[:=]\s*["\'](1[89]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)["\']',
+                        r'(?:version|ReactVersion)\s*[:=]\s*["\'](1[89]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)["\']',
+                        r'"react"\s*:\s*"[^"]*(1[89]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)[^"]*"',
+                        r'react-dom(?:@|[\s\-\_]*v?)(1[89]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)'
+                    ]
+                    for pattern in react_patterns:
+                        matches = re.findall(pattern, js_content, re.IGNORECASE)
+                        if matches:
+                            if "version" in pattern.lower() or "reactversion" in pattern.lower():
+                                if "react" in js_content.lower() or "useLayoutEffect" in js_content or "useState" in js_content:
+                                    self.results["react_version"] = matches[0]
+                                    self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {matches[0]}")
+                                    break
+                            else:
+                                self.results["react_version"] = matches[0]
+                                self.add_detail(f"JS Bundle'da React sürümü tespit edildi: {matches[0]}")
+                                break
 
                 # Next.js sürümü arama
                 if not self.results["nextjs_version"]:
-                    next_matches = re.findall(r'next(?:@|[\s\-\_]*v?)(1[456]\.[\d\.]+)', js_content, re.IGNORECASE)
-                    if next_matches:
-                        self.results["nextjs_version"] = next_matches[0]
-                        self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {next_matches[0]}")
+                    next_patterns = [
+                        r'next(?:@|[\s\-\_]*v?)(1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)',
+                        r'window\.next\s*=\s*\{.*?version:\s*["\'](1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)["\']',
+                        r'(?:__NEXT_VERSION|nextVersion|version)\s*[:=]\s*["\'](1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)["\']',
+                        r'"next"\s*:\s*"[^"]*(1[456]\.[\d\.]+(?:-[a-zA-Z0-9.\-]+)?)[^"]*"'
+                    ]
+                    for pattern in next_patterns:
+                        matches = re.findall(pattern, js_content, re.IGNORECASE)
+                        if matches:
+                            if "version" in pattern.lower() and "next" not in pattern.lower():
+                                if "next" in js_content.lower() or "app-router" in js_content.lower() or "window.next" in js_content:
+                                    self.results["nextjs_version"] = matches[0]
+                                    self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {matches[0]}")
+                                    break
+                            else:
+                                self.results["nextjs_version"] = matches[0]
+                                self.add_detail(f"JS Bundle'da Next.js sürümü tespit edildi: {matches[0]}")
+                                break
 
-                # İkisi de bulunduysa erken çık
-                if self.results["react_version"] and self.results["nextjs_version"]:
-                    break
+                # Diğer paketleri taramaya devam etmek için erken çıkışı (break) kaldırıyoruz
+                # if self.results["react_version"] and self.results["nextjs_version"]:
+                #     break
                     
             except Exception as e:
                 continue
@@ -293,6 +365,11 @@ def print_result(res):
         print(f"[{Fore.GREEN}+{Style.RESET_ALL}] React Server Components (RSC): {Fore.GREEN}Aktif{Style.RESET_ALL}")
     else:
         print(f"[{Fore.YELLOW}-{Style.RESET_ALL}] React Server Components (RSC): Kapalı veya Bulunamadı")
+        
+    if res.get('dependencies'):
+        print(f"\n[{Fore.CYAN}*{Style.RESET_ALL}] Tespit Edilen Diğer Bağımlılıklar:")
+        for pkg, ver in res['dependencies'].items():
+            print(f"  - {Fore.CYAN}{pkg}{Style.RESET_ALL}: {ver}")
 
     print("\nSonuç:")
     if res['vulnerable']:
